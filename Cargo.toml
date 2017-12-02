@@ -3,5 +3,8 @@ name = "aabb-quadtree"
 version = "0.1.0"
 authors = ["Ty Overby <ty@pre-alpha.com>"]
 
+description="A quadtree that maps bounding-boxes to elements"
+license="MIT/Apache-2.0"
+
 [dependencies]
-fnv="*"
+fnv="1.*.*"
