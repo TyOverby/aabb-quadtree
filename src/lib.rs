@@ -144,6 +144,9 @@ impl<T> QuadTree<T> {
 
     /// Inserts an element with the provided bounding box.
     pub fn insert_with_box(&mut self, t: T, aabb: Rect) -> ItemId {
+        debug_assert!(self.bounding_box().contains(&aabb.top_left));
+        debug_assert!(self.bounding_box().contains(&aabb.bottom_right));
+
         let &mut QuadTree {
             ref mut root,
             ref config,
