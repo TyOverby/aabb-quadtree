@@ -7,4 +7,5 @@ description="A quadtree that maps bounding-boxes to elements"
 license="MIT/Apache-2.0"
 
 [dependencies]
-fnv="1.*.*"
+fnv = "1.*.*"
+euclid= "0.16.*"
