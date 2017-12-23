@@ -46,7 +46,7 @@ struct QuadTreeConfig {
 
 /// The main QuadTree structure.  Mainly supports inserting, removing,
 /// and querying objects in 3d space.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct QuadTree<T, S> {
     root: QuadNode<S>,
     config: QuadTreeConfig,
@@ -54,7 +54,39 @@ pub struct QuadTree<T, S> {
     elements: FnvHashMap<ItemId, (T, Rect<S>)>,
 }
 
-#[derive(Debug)]
+impl <T: ::std::fmt::Debug, S> ::std::fmt::Debug for QuadTree<T, S> {
+    fn fmt(&self, formatter: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+        formatter.debug_struct("QuadTree")
+            .field("root", &self.root)
+            .field("config", &self.config)
+            .field("id", &self.id)
+            .field("elements", &self.elements)
+            .finish()
+    }
+}
+
+impl <S> ::std::fmt::Debug for QuadNode<S> {
+    fn fmt(&self, formatter: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+        match self {
+            &QuadNode::Branch{ ref aabb,  ref children, ref in_all, ref element_count, ref depth} => formatter
+                .debug_struct("QuadNode")
+                .field("aabb", aabb)
+                .field("children", children)
+                .field("in_all", in_all)
+                .field("element_count", element_count)
+                .field("depth", depth)
+                .finish(),
+
+            &QuadNode::Leaf{ref aabb, ref elements, ref depth} => formatter
+                .debug_struct("QuadNode")
+                .field("aabb", aabb)
+                .field("elements", elements)
+                .field("depth", depth)
+                .finish(),
+        }
+    }
+}
+
 enum QuadNode<S> {
     Branch {
         aabb: Rect<S>,
@@ -190,7 +222,7 @@ impl <T, S> QuadTree<T, S> {
         T: ::std::fmt::Debug,
     {
         let mut ids = vec![];
-        self.root.query(bounding_box, &mut ids);
+        self.root.query(bounding_box, &self.config, &mut ids);
         ids.sort_by_key(|&(id, _)| id);
         ids.dedup();
         ids.iter()
@@ -296,7 +328,7 @@ impl <S> QuadNode<S> {
                     }
                 } else {
                     for &mut (ref aabb, ref mut child) in children {
-                        if aabb.intersects(&item_aabb) {
+                        if aabb.intersects(&item_aabb) || close_to_rect(*aabb, item_aabb, config.epsilon) {
                             if child.insert(item_id, item_aabb, config) {
                                 *element_count += 1;
                                 did_insert = true;
@@ -387,7 +419,7 @@ impl <S> QuadNode<S> {
                     did_remove = remove_from(in_all, item_id);
                 } else {
                     for &mut (ref child_aabb, ref mut child_tree) in children {
-                        if child_aabb.intersects(&item_aabb) {
+                        if child_aabb.intersects(&item_aabb) || close_to_rect(*child_aabb, item_aabb, config.epsilon) {
                             did_remove |= child_tree.remove(item_id, item_aabb, config);
                         }
                     }
@@ -407,7 +439,7 @@ impl <S> QuadNode<S> {
 
         if let Some((size, aabb, depth)) = compact {
             let mut elements = Vec::with_capacity(size);
-            self.query(aabb, &mut elements);
+            self.query(aabb, config, &mut elements);
             elements.sort_by(|&(id1, _), &(ref id2, _)| id1.cmp(id2));
             elements.dedup();
             *self = QuadNode::Leaf {
@@ -419,26 +451,26 @@ impl <S> QuadNode<S> {
         removed
     }
 
-    fn query(&self, query_aabb: Rect<S>, out: &mut Vec<(ItemId, Rect<S>)>) {
-        fn match_all<S>(elements: &Vec<(ItemId, Rect<S>)>, query_aabb: Rect<S>, out: &mut Vec<(ItemId, Rect<S>)>) {
+    fn query(&self, query_aabb: Rect<S>, config: &QuadTreeConfig, out: &mut Vec<(ItemId, Rect<S>)>) {
+        fn match_all<S>(elements: &Vec<(ItemId, Rect<S>)>, query_aabb: Rect<S>, out: &mut Vec<(ItemId, Rect<S>)>, config: &QuadTreeConfig) {
             for &(ref child_id, ref child_aabb) in elements {
-                if query_aabb.intersects(child_aabb) {
+                if query_aabb.intersects(child_aabb) || close_to_rect(query_aabb, *child_aabb, config.epsilon) {
                     out.push((*child_id, *child_aabb))
                 }
             }
         }
 
         match self {
-            &QuadNode::Branch { ref in_all, ref children, .. } => {
-                match_all(in_all, query_aabb, out);
+            &QuadNode::Branch { ref in_all, ref children,  .. } => {
+                match_all(in_all, query_aabb, out, config);
 
                 for &(ref child_aabb, ref child_tree) in children {
                     if query_aabb.intersects(&child_aabb) {
-                        child_tree.query(query_aabb, out);
+                        child_tree.query(query_aabb, config, out);
                     }
                 }
             }
-            &QuadNode::Leaf { ref elements, .. } => match_all(elements, query_aabb, out),
+            &QuadNode::Leaf { ref elements, .. } => match_all(elements, query_aabb, out, config),
         }
     }
 }
@@ -473,20 +505,10 @@ fn split_quad<S>(rect: Rect<S>) -> [Rect<S>; 4] {
 }
 
 fn close_to_point<S>(a: Point<S>, b: Point<S>, epsilon: f32) -> bool {
-    (a.x - b.x).abs() > epsilon &&
-    (a.y - b.y).abs() > epsilon
+    (a.x - b.x).abs() < epsilon &&
+    (a.y - b.y).abs() < epsilon
 }
 fn close_to_rect<S>(a: Rect<S>, b: Rect<S>, epsilon: f32) -> bool {
     close_to_point(a.origin, b.origin, epsilon) &&
     close_to_point(a.bottom_right(), b.bottom_right(), epsilon)
-}
-
-#[test]
-fn similar_points() {
-    let mut quad_tree = QuadTree::new(Rect::centered_with_radius(&Point { x: 0.0, y: 0.0 }, 10.0), false, 1, 5, 2);
-
-    let p = Point { x: 0.0, y: 0.0 };
-    quad_tree.insert(p);
-    quad_tree.insert(p);
-    assert_eq!(quad_tree.elements.len(), 1);
 }
