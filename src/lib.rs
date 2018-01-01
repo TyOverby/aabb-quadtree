@@ -90,15 +90,15 @@ impl <S> ::std::fmt::Debug for QuadNode<S> {
 enum QuadNode<S> {
     Branch {
         aabb: Rect<S>,
-        children: [(Rect<S>, Box<QuadNode<S>>); 4],
-        in_all: Vec<(ItemId, Rect<S>)>,
         element_count: usize,
         depth: usize,
+        in_all: Vec<(ItemId, Rect<S>)>,
+        children: [(Rect<S>, Box<QuadNode<S>>); 4],
     },
     Leaf {
         aabb: Rect<S>,
-        elements: Vec<(ItemId, Rect<S>)>,
         depth: usize,
+        elements: Vec<(ItemId, Rect<S>)>,
     },
 }
 
@@ -177,7 +177,7 @@ impl <T, S> QuadTree<T, S> {
     pub fn default(size: Rect<S>) -> QuadTree<T, S> { QuadTree::new(size, true, 4, 16, 8) }
 
     /// Inserts an element with the provided bounding box.
-    pub fn insert_with_box(&mut self, t: T, aabb: Rect<S>) -> ItemId {
+    pub fn insert_with_box(&mut self, t: T, aabb: Rect<S>) -> Option<ItemId> {
         debug_assert!(self.bounding_box().contains(&aabb.origin));
         debug_assert!(self.bounding_box().contains(&aabb.bottom_right()));
 
@@ -193,16 +193,17 @@ impl <T, S> QuadTree<T, S> {
 
         if root.insert(item_id, aabb, config) {
             elements.insert(item_id, (t, aabb));
+            return Some(item_id);
+        } else {
+            return None;
         }
-
-        item_id
     }
 
     /// Returns an ItemId for the first element that was inserted into the tree.
     pub fn first(&self) -> Option<ItemId> { self.elements.iter().next().map(|(id, _)| *id) }
 
     /// Inserts an element into the tree.
-    pub fn insert(&mut self, t: T) -> ItemId
+    pub fn insert(&mut self, t: T) -> Option<ItemId>
     where
         T: Spatial<S>,
     {
@@ -327,8 +328,8 @@ impl <S> QuadNode<S> {
                         *element_count += 1;
                     }
                 } else {
-                    for &mut (ref aabb, ref mut child) in children {
-                        if aabb.intersects(&item_aabb) || close_to_rect(*aabb, item_aabb, config.epsilon) {
+                    for &mut (aabb, ref mut child) in children {
+                        if my_intersects(aabb, item_aabb) || close_to_rect(aabb, item_aabb, config.epsilon) {
                             if child.insert(item_id, item_aabb, config) {
                                 *element_count += 1;
                                 did_insert = true;
@@ -418,8 +419,8 @@ impl <S> QuadNode<S> {
                 if item_aabb.contains(&midpoint(*aabb)) {
                     did_remove = remove_from(in_all, item_id);
                 } else {
-                    for &mut (ref child_aabb, ref mut child_tree) in children {
-                        if child_aabb.intersects(&item_aabb) || close_to_rect(*child_aabb, item_aabb, config.epsilon) {
+                    for &mut (child_aabb, ref mut child_tree) in children {
+                        if my_intersects(child_aabb, item_aabb) || close_to_rect(child_aabb, item_aabb, config.epsilon) {
                             did_remove |= child_tree.remove(item_id, item_aabb, config);
                         }
                     }
@@ -453,9 +454,9 @@ impl <S> QuadNode<S> {
 
     fn query(&self, query_aabb: Rect<S>, config: &QuadTreeConfig, out: &mut Vec<(ItemId, Rect<S>)>) {
         fn match_all<S>(elements: &Vec<(ItemId, Rect<S>)>, query_aabb: Rect<S>, out: &mut Vec<(ItemId, Rect<S>)>, config: &QuadTreeConfig) {
-            for &(ref child_id, ref child_aabb) in elements {
-                if query_aabb.intersects(child_aabb) || close_to_rect(query_aabb, *child_aabb, config.epsilon) {
-                    out.push((*child_id, *child_aabb))
+            for &(ref child_id, child_aabb) in elements {
+                if my_intersects(query_aabb, child_aabb) || close_to_rect(query_aabb, child_aabb, config.epsilon) {
+                    out.push((*child_id, child_aabb))
                 }
             }
         }
@@ -464,8 +465,8 @@ impl <S> QuadNode<S> {
             &QuadNode::Branch { ref in_all, ref children,  .. } => {
                 match_all(in_all, query_aabb, out, config);
 
-                for &(ref child_aabb, ref child_tree) in children {
-                    if query_aabb.intersects(&child_aabb) {
+                for &(child_aabb, ref child_tree) in children {
+                    if my_intersects(query_aabb, child_aabb) {
                         child_tree.query(query_aabb, config, out);
                     }
                 }
@@ -491,6 +492,14 @@ fn midpoint<S>(rect: Rect<S>) -> Point<S> {
     origin + half
 }
 
+fn my_intersects<S>(a: Rect<S>, b: Rect<S>) -> bool {
+    a.intersects(&b) ||
+    a.min_x() == b.min_x() ||
+    a.min_y() == b.min_y() ||
+    a.max_x() == b.max_x() ||
+    a.max_y() == b.max_y()
+}
+
 fn split_quad<S>(rect: Rect<S>) -> [Rect<S>; 4] {
     use euclid::vec2;
     let origin = rect.origin;
@@ -511,4 +520,54 @@ fn close_to_point<S>(a: Point<S>, b: Point<S>, epsilon: f32) -> bool {
 fn close_to_rect<S>(a: Rect<S>, b: Rect<S>, epsilon: f32) -> bool {
     close_to_point(a.origin, b.origin, epsilon) &&
     close_to_point(a.bottom_right(), b.bottom_right(), epsilon)
+}
+
+#[test]
+fn test_boundary_conditions() {
+    use euclid::*;
+
+    let total = Rect::new(point2(0.0, 0.0), vec2(10.0, 10.0).to_size());
+    let quads = split_quad(total);
+    let config = QuadTreeConfig {
+        allow_duplicates: true,
+        max_children: 200,
+        min_children: 0,
+        max_depth: 5,
+        epsilon: 0.001,
+    };
+
+    let mut branch = QuadNode::Branch {
+        aabb: total,
+        in_all: vec![],
+        element_count: 0,
+        depth: 1,
+        children: [
+            (quads[0], Box::new(QuadNode::Leaf {
+                aabb: quads[0],
+                elements: vec![],
+                depth: 2,
+            })),
+            (quads[1], Box::new(QuadNode::Leaf {
+                aabb: quads[1],
+                elements: vec![],
+                depth: 2,
+            })),
+            (quads[2], Box::new(QuadNode::Leaf {
+                aabb: quads[2],
+                elements: vec![],
+                depth: 2,
+            })),
+            (quads[3], Box::new(QuadNode::Leaf {
+                aabb: quads[3],
+                elements: vec![],
+                depth: 2,
+            })),
+        ]
+    };
+
+    // Top left corner
+    assert!(branch.insert(ItemId(0), Rect::new(point2(0.0, 0.0), vec2(0.0, 0.0).to_size()), &config));
+    // Middle
+    assert!(branch.insert(ItemId(0), Rect::new(point2(5.0, 5.0), vec2(0.0, 0.0).to_size()), &config));
+
 }
